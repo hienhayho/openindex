@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def build_overview_prompt(doc_name: str, summary_md: str) -> str:
-    """Build prompt to condense a PageIndex tree summary into a prose overview.
+    """Build prompt to condense a WikiIndex tree summary into a prose overview.
 
     Args:
         doc_name: Document stem name (no extension).

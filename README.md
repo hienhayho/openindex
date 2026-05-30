@@ -54,11 +54,11 @@ Runs the full pipeline: section extraction → verification → tree building �
 import os
 import json
 from dotenv import load_dotenv
-from openindex import PageIndex, TreeConfig
+from openindex import WikiIndex, TreeConfig
 
 load_dotenv()
 
-index = PageIndex(
+index = WikiIndex(
     model_name=os.getenv("OPENAI_MODEL_NAME"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -67,7 +67,7 @@ index = PageIndex(
 )
 
 result = index.build_wiki_sync("paper.pdf", "./wiki")
-PageIndex.print_result(result)
+WikiIndex.print_result(result)
 ```
 
 See [`tools/index.py`](tools/index.py) for a full example.

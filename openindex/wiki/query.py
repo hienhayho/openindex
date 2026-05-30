@@ -124,7 +124,7 @@ class WikiQueryAgent:
     """Q&A agent that searches an OpenKB-compatible wiki to answer questions.
 
     Uses agno Agent with three tools: read_file, get_page_content, list_wiki_files.
-    The wiki must have been produced by PageIndex.build_wiki() or compile_wiki().
+    The wiki must have been produced by WikiIndex.build_wiki() or compile_wiki().
 
     Attributes:
         wiki_dir: Resolved path to the wiki root directory.

@@ -14,7 +14,7 @@ from openindex.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class PageIndex:
+class WikiIndex:
     """Entry point for building a hierarchical section index from a PDF.
 
     Runs a multi-phase pipeline:
@@ -25,7 +25,7 @@ class PageIndex:
       5. Generate per-node summaries and accumulated doc description
 
     Usage:
-        index = PageIndex(model_name, base_url, api_key)
+        index = WikiIndex(model_name, base_url, api_key)
         result = index.build_sync("paper.pdf")
     """
 
@@ -163,7 +163,6 @@ class PageIndex:
         print("Structure:")
 
         def _print_node(node: dict, indent: int = 0) -> None:
-            prefix = "  " * indent
             marker = "│  " * max(indent - 1, 0) + ("├─ " if indent > 0 else "")
             depth = node.get("depth", 0)
             hashes = "#" * (depth + 1)

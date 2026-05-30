@@ -53,7 +53,7 @@ async def compile_wiki(
 ) -> None:
     """Run the full wiki compilation pipeline for one document.
 
-    Takes a PageIndex.build() result dict and writes/updates the wiki:
+    Takes a WikiIndex.build() result dict and writes/updates the wiki:
       1. Write sources JSON and summary Markdown (no LLM)
       2. Generate prose overview from the section tree summary
       3. Plan which concept pages to create/update/cross-link
@@ -65,7 +65,7 @@ async def compile_wiki(
       9. Update index.md
 
     Args:
-        result: Output of PageIndex.build() — must have doc_name, nodes, pages, description.
+        result: Output of WikiIndex.build() — must have doc_name, nodes, pages, description.
         wiki_dir: Root wiki directory (wiki/ folder will be written here directly).
         pool: Shared AgentPool with wiki_planner, wiki_concept, summarizer agents.
     """

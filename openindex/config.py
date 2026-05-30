@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class TreeConfig(BaseModel):
-    """Configuration for the PageIndex pipeline.
+    """Configuration for the WikiIndex pipeline.
 
     Controls token budgets, concurrency, and expansion thresholds.
     All values can be overridden at construction time.

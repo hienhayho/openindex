@@ -20,7 +20,7 @@ def write_sources_json(result: dict, wiki_dir: Path) -> Path:
     array format: [{"page": N, "content": "...", "images": []}, ...].
 
     Args:
-        result: PageIndex.build() output dict with "doc_name" and "pages" keys.
+        result: WikiIndex.build() output dict with "doc_name" and "pages" keys.
         wiki_dir: Root wiki directory.
 
     Returns:
@@ -79,7 +79,7 @@ def write_summary_md(result: dict, wiki_dir: Path) -> Path:
     Frontmatter: doc_type=pageindex, full_text=sources/<stem>.json
 
     Args:
-        result: PageIndex.build() output with "doc_name", "nodes" keys.
+        result: WikiIndex.build() output with "doc_name", "nodes" keys.
         wiki_dir: Root wiki directory.
 
     Returns:
