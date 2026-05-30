@@ -10,10 +10,6 @@ from openindex.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_FIX_ATTEMPTS = 3
-_FIX_SEARCH_RADIUS = 5  # pages to search on each side of stated page during fix
-
-
 async def verify_and_fix(
     sections: list[FlatSection],
     page_texts: list[str],
@@ -24,13 +20,13 @@ async def verify_and_fix(
     """Verify all sections appear on their stated page; fix incorrect ones iteratively.
 
     Uses LLM to verify, then focused LLM locate calls to fix, then fast string
-    check to confirm. Repeats up to _MAX_FIX_ATTEMPTS times.
+    check to confirm. Repeats up to config.max_fix_attempts times.
 
     Args:
         sections: flat section list with physical_index assignments.
         page_texts: raw text per page.
         pool: agent pool with verifier and locator agents.
-        config: tree config (unused directly, kept for interface consistency).
+        config: tree config (controls max_fix_attempts and fix_search_radius).
         start_index: 1-based page number of the first page.
 
     Returns:
@@ -41,10 +37,10 @@ async def verify_and_fix(
         return sections
 
     logger.info("verify_incorrect", count=len(incorrect))
-    for attempt in range(_MAX_FIX_ATTEMPTS):
+    for attempt in range(config.max_fix_attempts):
         if not incorrect:
             break
-        sections, incorrect = await _fix_pass(sections, incorrect, page_texts, pool, start_index)
+        sections, incorrect = await _fix_pass(sections, incorrect, page_texts, pool, config, start_index)
         logger.info("fix_attempt", attempt=attempt + 1, remaining=len(incorrect))
 
     return sections
@@ -89,12 +85,13 @@ async def _fix_pass(
     incorrect_indices: list[int],
     page_texts: list[str],
     pool: AgentPool,
+    config: TreeConfig,
     start_index: int,
 ) -> tuple[list[FlatSection], list[int]]:
     """Attempt to relocate incorrect sections using focused LLM locate calls.
 
     Search window is bounded by the nearest correct neighbours on each side,
-    further clamped to ±_FIX_SEARCH_RADIUS pages from the stated page.
+    further clamped to ±config.fix_search_radius pages from the stated page.
     After fixing, re-verifies using fast string check (no LLM).
 
     Args:
@@ -102,6 +99,7 @@ async def _fix_pass(
         incorrect_indices: indices of sections that failed verification.
         page_texts: raw text per page.
         pool: agent pool with locator agent.
+        config: tree config (provides fix_search_radius).
         start_index: 1-based first page number.
 
     Returns:
@@ -123,8 +121,8 @@ async def _fix_pass(
             (sections[j].physical_index for j in range(i + 1, len(sections)) if j not in incorrect_set),
             len(page_texts) + start_index - 1,
         )
-        search_start = max(prev_page, s.physical_index - _FIX_SEARCH_RADIUS, start_index)
-        search_end = min(next_page, s.physical_index + _FIX_SEARCH_RADIUS, len(page_texts) + start_index - 1)
+        search_start = max(prev_page, s.physical_index - config.fix_search_radius, start_index)
+        search_end = min(next_page, s.physical_index + config.fix_search_radius, len(page_texts) + start_index - 1)
 
         search_pages = page_texts[search_start - start_index: search_end - start_index + 1]
         if not search_pages:

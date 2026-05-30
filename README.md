@@ -110,4 +110,8 @@ See [`tools/query.py`](tools/query.py) for a full example.
 
 ## License
 
-MIT
+Apache 2.0. See [LICENSE](LICENSE) for details.
+
+This project incorporates code from:
+- [PageIndex](https://github.com/VectifyAI/PageIndex) — MIT License
+- [OpenKB](https://github.com/VectifyAI/OpenKB) — Apache 2.0 License

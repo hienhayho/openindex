@@ -10,9 +10,6 @@ from openindex.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_DEPTH = 5  # hard recursion cap to prevent runaway expansion
-
-
 async def expand_large_nodes(
     nodes: list[SectionNode],
     page_texts: list[str],
@@ -30,14 +27,14 @@ async def expand_large_nodes(
         nodes: current level of nodes to inspect.
         page_texts: full document page texts.
         pool: agent pool.
-        config: controls max_pages_per_node and max_tokens_per_node thresholds.
+        config: controls max_pages_per_node, max_tokens_per_node, and max_expansion_depth.
         start_index: 1-based first page number.
-        depth: current recursion depth (stops at _MAX_DEPTH).
+        depth: current recursion depth (stops at config.max_expansion_depth).
 
     Returns:
         nodes with large leaf nodes replaced by expanded versions.
     """
-    if depth > _MAX_DEPTH:
+    if depth > config.max_expansion_depth:
         return nodes
 
     large = [(i, n) for i, n in enumerate(nodes) if _is_large(n, page_texts, config, pool, start_index)]
@@ -45,7 +42,7 @@ async def expand_large_nodes(
         return nodes
 
     expanded = await tqdm.gather(
-        *[_expand_node(n, page_texts, pool, config, start_index, depth) for _, n in large],
+        *[_expand_node(n, page_texts, pool, config, start_index) for _, n in large],
         desc=f"Expanding large nodes [depth={depth}]",
         unit="node",
     )
@@ -69,7 +66,6 @@ async def _expand_node(
     pool: AgentPool,
     config: TreeConfig,
     start_index: int,
-    depth: int,
 ) -> SectionNode:
     """Run the full generate→verify→tree pipeline on a single large node's page range.
 
@@ -79,7 +75,6 @@ async def _expand_node(
         pool: agent pool.
         config: tree config.
         start_index: 1-based first page number.
-        depth: current depth (for logging).
 
     Returns:
         node with children populated, or the original node if expansion yields nothing useful.

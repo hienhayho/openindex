@@ -13,6 +13,9 @@ class TreeConfig(BaseModel):
         max_parallel_llm_calls: Semaphore limit — maximum concurrent LLM calls across all pipeline phases.
         max_pages_per_node: Leaf nodes spanning more pages than this are candidates for recursive expansion.
         max_tokens_per_node: Leaf nodes must also exceed this token count to trigger expansion (both thresholds must be met).
+        max_fix_attempts: Maximum verify-fix loop iterations during the verification phase.
+        fix_search_radius: Pages to search on each side of the stated page when locating a misplaced section.
+        max_expansion_depth: Hard recursion cap for expand_large_nodes to prevent runaway expansion.
     """
 
     max_tokens_per_group: int = Field(default=20000)
@@ -20,3 +23,6 @@ class TreeConfig(BaseModel):
     max_parallel_llm_calls: int = Field(default=5)
     max_pages_per_node: int = Field(default=10)
     max_tokens_per_node: int = Field(default=50000)
+    max_fix_attempts: int = Field(default=3)
+    fix_search_radius: int = Field(default=5)
+    max_expansion_depth: int = Field(default=5)
