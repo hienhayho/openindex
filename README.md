@@ -18,6 +18,7 @@ Unlike traditional RAG (which rediscovers knowledge on every query), OpenIndex c
   - [Index a PDF](#index-a-pdf)
   - [Return types](#return-types)
   - [Return wiki as dict](#return-wiki-as-dict-not-queryable)
+  - [Index a Markdown / plain-text file](#index-a-markdown--plain-text-file)
   - [Query the wiki](#query-the-wiki)
   - [Async usage](#async-usage)
 - [License](#license)
@@ -198,6 +199,28 @@ wiki2 = index.build_wiki_sync("paper2.pdf").wiki
 
 index_md = build_unified_index([wiki1, wiki2])
 print(index_md)
+```
+
+### Index a Markdown / plain-text file
+
+Use `split_text_to_pages` to chunk a `.md` or `.txt` file into page-sized strings, then pass them via `texts=`.
+
+```python
+from openindex import WikiIndex, split_text_to_pages
+
+text = open("notes.md").read()
+pages = split_text_to_pages(text, words_per_page=500)
+
+result = index.build_wiki_sync(texts=pages, doc_name="notes.md", wiki_dir="./wiki")
+```
+
+`split_text_to_pages` splits on word count but always extends the boundary forward to the next `\n`, so lines are never broken mid-sentence. `words_per_page` controls target chunk size (default 500); actual chunk may be slightly larger.
+
+```python
+from openindex import split_text_to_pages
+
+pages = split_text_to_pages("Long document text...", words_per_page=300)
+# returns list[str], one entry per "page"
 ```
 
 ### Query the wiki
