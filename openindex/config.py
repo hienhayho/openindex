@@ -16,6 +16,8 @@ class TreeConfig(BaseModel):
         max_fix_attempts: Maximum verify-fix loop iterations during the verification phase.
         fix_search_radius: Pages to search on each side of the stated page when locating a misplaced section.
         max_expansion_depth: Hard recursion cap for expand_large_nodes to prevent runaway expansion.
+        max_sections: Maximum total sections to extract across the entire document. 0 means unlimited.
+            When set, each page group receives a proportional budget (max_sections // num_groups).
     """
 
     max_tokens_per_group: int = Field(default=20000)
@@ -26,3 +28,4 @@ class TreeConfig(BaseModel):
     max_fix_attempts: int = Field(default=3)
     fix_search_radius: int = Field(default=5)
     max_expansion_depth: int = Field(default=5)
+    max_sections: int = Field(default=0)

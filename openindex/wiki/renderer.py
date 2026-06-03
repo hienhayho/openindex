@@ -45,7 +45,7 @@ def write_sources_json(result: dict, wiki_dir: Path) -> Path:
 # Summary Markdown
 # ---------------------------------------------------------------------------
 
-def _render_nodes(nodes: list[dict], depth: int = 1) -> str:
+def render_nodes(nodes: list[dict], depth: int = 1) -> str:
     """Recursively render section nodes as Markdown headings with summaries.
 
     Args:
@@ -68,7 +68,7 @@ def _render_nodes(nodes: list[dict], depth: int = 1) -> str:
         if summary:
             lines.append(f"Summary: {summary}\n")
         if children:
-            lines.append(_render_nodes(children, depth + 1))
+            lines.append(render_nodes(children, depth + 1))
 
     return "\n".join(lines)
 
@@ -90,7 +90,7 @@ def write_summary_md(result: dict, wiki_dir: Path) -> Path:
     summaries_dir.mkdir(parents=True, exist_ok=True)
 
     frontmatter = f"---\ndoc_type: pageindex\nfull_text: sources/{stem}.json\n---\n\n"
-    body = _render_nodes(result.get("nodes", []), depth=1)
+    body = render_nodes(result.get("nodes", []), depth=1)
 
     out_path = summaries_dir / f"{stem}.md"
     out_path.write_text(frontmatter + body, encoding="utf-8")
@@ -544,3 +544,47 @@ def add_related_link(wiki_dir: Path, concept_slug: str, doc_name: str, source_fi
 
     text += f"\n\nSee also: {link}"
     path.write_text(text, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Unified index builder
+# ---------------------------------------------------------------------------
+
+def build_unified_index(wiki_dicts: list[dict]) -> str:
+    """Build a unified index.md string from multiple in-memory wiki dicts.
+
+    Each dict must be the output of compile_wiki_to_dict() and contain
+    "doc_name", "concepts", and optionally "description".
+
+    Concepts with the same slug across documents are merged — the first
+    occurrence's brief is used.
+
+    Args:
+        wiki_dicts: list of wiki dicts, each from compile_wiki_to_dict().
+
+    Returns:
+        Unified index.md Markdown string.
+    """
+    lines = ["# Knowledge Base Index", "", "## Documents", ""]
+    seen_concepts: dict[str, str] = {}
+
+    for wiki in wiki_dicts:
+        doc_name = wiki.get("doc_name", "")
+        description = wiki.get("description", "")
+        entry = f"- [[summaries/{doc_name}]] (pageindex)"
+        if description:
+            entry += f" — {description}"
+        lines.append(entry)
+
+        for slug, data in wiki.get("concepts", {}).items():
+            if slug not in seen_concepts:
+                seen_concepts[slug] = data.get("brief", "")
+
+    lines += ["", "## Concepts", ""]
+    for slug, brief in sorted(seen_concepts.items()):
+        entry = f"- [[concepts/{slug}]]"
+        if brief:
+            entry += f" — {brief}"
+        lines.append(entry)
+
+    return "\n".join(lines)

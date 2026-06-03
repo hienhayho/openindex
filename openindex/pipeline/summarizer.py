@@ -81,10 +81,11 @@ async def generate_doc_description(
     Returns:
         Final accumulated description string (up to 5 sentences).
     """
+    active = [n for n in nodes if n.summary]
     description = ""
-    for node in nodes:
-        if not node.summary:
-            continue
-        prompt = build_accumulate_description_prompt(description, node.title, node.summary)
-        description = await run_text(pool.summarizer, prompt, pool.sem)
+    with tqdm(total=len(active), desc="Building description", unit="section") as pbar:
+        for node in active:
+            prompt = build_accumulate_description_prompt(description, node.title, node.summary)
+            description = await run_text(pool.summarizer, prompt, pool.sem)
+            pbar.update(1)
     return description

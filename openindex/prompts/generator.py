@@ -1,10 +1,15 @@
-def build_generate_prompt(tagged_text: str, previous_sections: list[dict] | None = None) -> str:
+def build_generate_prompt(
+    tagged_text: str,
+    previous_sections: list[dict] | None = None,
+    max_sections: int = 0,
+) -> str:
     """Build the prompt for the section structure generator.
 
     Args:
         tagged_text: page text wrapped in <physical_index_X> tags.
         previous_sections: already-detected sections from prior groups,
             passed as context to avoid duplication.
+        max_sections: maximum sections to extract in this group. 0 = unlimited.
 
     Returns:
         Prompt string for the generator agent.
@@ -16,6 +21,11 @@ def build_generate_prompt(tagged_text: str, previous_sections: list[dict] | None
 {json.dumps(previous_sections, ensure_ascii=False, indent=2)}
 
 """
+
+    limit_rule = (
+        f"- Extract AT MOST {max_sections} sections from this group — prioritize top-level and major subsections\n"
+        if max_sections > 0 else ""
+    )
 
     return f"""{prev_block}--- DOCUMENT PAGES ---
 {tagged_text}
@@ -32,11 +42,13 @@ Extract ALL sections and subsections. For each section:
 - physical_index: the page number where this section STARTS (use the <physical_index_X> number)
 
 Rules:
-- Detect ALL levels of headings: chapters, sections, subsections, numbered items that introduce distinct topics
+- Extract meaningful structural sections: chapters, numbered sections, named subsections, appendices
+- DO NOT extract: individual list items, figure captions, table rows, footnotes, or minor paragraph breaks
+- Only create a subsection if it has a real heading or numbered label (e.g. "1.1 Methods") — not every paragraph
 - Use the <physical_index_X> tags to determine the correct page number for each section start
-- For documents without explicit headings, derive a short title (2-6 words) from topic shifts
-- Always include conclusion sections, summaries, and appendices
-- If this is a continuation (previous sections provided), start structure numbering after the last previous section
+- For documents without explicit headings, derive a short title (2-6 words) from major topic shifts only
+- Prefer fewer, well-scoped sections over exhaustive enumeration of every sub-item
+{limit_rule}- If this is a continuation (previous sections provided), start structure numbering after the last previous section
 
 Return an empty sections list only if the text contains no section boundaries at all."""
 

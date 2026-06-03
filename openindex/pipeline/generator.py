@@ -107,11 +107,14 @@ async def generate_flat_sections(
     tagged = tag_pages(page_texts, start_index)
     groups = group_pages(tagged, token_counts, config.max_tokens_per_group, config.page_overlap)
 
+    num_groups = len(groups)
+    per_group = math.ceil(config.max_sections / num_groups) if config.max_sections > 0 else 0
+
     all_sections: list[FlatSection] = []
     prev = list(previous_sections) if previous_sections else None
 
     for group_text in await tqdm.gather(
-        *[_generate_group(group, pool, prev) for group in groups],
+        *[_generate_group(group, pool, prev, per_group) for group in groups],
         desc="Generating structure",
         unit="group",
     ):
@@ -129,6 +132,7 @@ async def _generate_group(
     group_text: str,
     pool: AgentPool,
     previous_sections: list[dict] | None,
+    max_sections: int = 0,
 ) -> list[FlatSection]:
     """Send one page group to the generator LLM and return detected sections.
 
@@ -136,10 +140,11 @@ async def _generate_group(
         group_text: joined tagged pages for this group.
         pool: agent pool.
         previous_sections: already-detected sections passed as context.
+        max_sections: per-group section cap passed to the prompt. 0 = unlimited.
 
     Returns:
         List of FlatSection detected in this group.
     """
-    prompt = build_generate_prompt(group_text, previous_sections)
+    prompt = build_generate_prompt(group_text, previous_sections, max_sections)
     result: FlatSectionList = await run_structured(pool.generator, prompt, pool.sem)
     return result.sections if result else []

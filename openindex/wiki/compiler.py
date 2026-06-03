@@ -173,3 +173,103 @@ async def compile_wiki(
         upsert_index_concept(wiki_dir, slug, brief=concept_briefs_map.get(slug, ""))
 
     logger.info("compile_wiki_done", doc=doc_name, concepts=len(concept_slugs))
+
+
+async def compile_wiki_to_dict(
+    result: dict,
+    pool: AgentPool,
+) -> dict:
+    """Run the full wiki compilation pipeline and return artifacts as a dict.
+
+    Same pipeline as compile_wiki() but writes nothing to disk. Use when
+    wiki_dir is not provided and the caller wants in-memory results.
+
+    Args:
+        result: Output of WikiIndex.build() — must have doc_name, nodes, pages, description.
+        pool: Shared AgentPool with wiki_planner, wiki_concept, summarizer agents.
+
+    Returns:
+        Dict with keys:
+          - summary: Markdown string (section tree with frontmatter)
+          - sources: list of {"page": N, "content": "..."} dicts
+          - concepts: dict mapping slug → {"brief": str, "content": str}
+          - index: Markdown string (index.md content)
+    """
+    from openindex.wiki.renderer import render_nodes, sanitize_slug, strip_ghost_wikilinks
+
+    doc_name = Path(result["doc_name"]).stem
+    logger.info("compile_wiki_to_dict_start", doc=doc_name)
+
+    # --- Sources ---
+    pages_dict: dict = result.get("pages", {})
+    sources = [
+        {"page": page_num, "content": text, "images": []}
+        for page_num, text in sorted(pages_dict.items())
+    ]
+
+    # --- Summary markdown ---
+    frontmatter = f"---\ndoc_type: pageindex\nfull_text: sources/{doc_name}.json\n---\n\n"
+    body = render_nodes(result.get("nodes", []), depth=1)
+    summary_md = frontmatter + body
+
+    # --- Overview ---
+    overview = await run_text(pool.summarizer, build_overview_prompt(doc_name, summary_md), pool.sem)
+    logger.info("overview_done", doc=doc_name)
+
+    # --- Plan (no existing concepts in memory mode) ---
+    plan: ConceptPlan = await run_structured(
+        pool.wiki_planner,
+        build_concepts_plan_prompt(overview, "(none yet)"),
+        pool.sem,
+    )
+    logger.info("concept_plan_done", create=len(plan.create), update=len(plan.update))
+
+    # --- Wikilink whitelist ---
+    planned_slugs = {sanitize_slug(c.name) for c in plan.create + plan.update}
+    known_targets: set[str] = (
+        {f"concepts/{s}" for s in planned_slugs}
+        | {f"summaries/{doc_name}"}
+    )
+    known_targets_str = _format_known_targets(known_targets)
+
+    # --- Generate concept pages concurrently (create only in memory mode) ---
+    async def _gen(item) -> tuple[str, ConceptPage]:
+        slug = sanitize_slug(item.name)
+        page: ConceptPage = await run_structured(
+            pool.wiki_concept,
+            build_concept_create_prompt(item.title, doc_name, overview, known_targets_str),
+            pool.sem,
+        )
+        return slug, page
+
+    tasks = [_gen(c) for c in plan.create + plan.update]
+    concepts: dict[str, dict] = {}
+    if tasks:
+        gathered = await tqdm.gather(*tasks, desc="Generating concepts", unit="concept")
+        for slug, page in (r for r in gathered if r is not None):
+            cleaned = strip_ghost_wikilinks(page.content, known_targets)
+            concepts[slug] = {"brief": page.brief, "content": cleaned}
+
+    logger.info("concepts_generated", count=len(concepts))
+
+    # --- Index markdown ---
+    index_lines = ["# Knowledge Base Index", "", "## Documents", ""]
+    index_lines.append(f"- [[summaries/{doc_name}]] (pageindex) — {result.get('description', '')}")
+    index_lines += ["", "## Concepts", ""]
+    for slug, data in sorted(concepts.items()):
+        brief = data.get("brief", "")
+        entry = f"- [[concepts/{slug}]]"
+        if brief:
+            entry += f" — {brief}"
+        index_lines.append(entry)
+    index_md = "\n".join(index_lines)
+
+    logger.info("compile_wiki_to_dict_done", doc=doc_name, concepts=len(concepts))
+    return {
+        "doc_name": doc_name,
+        "description": result.get("description", ""),
+        "summary": summary_md,
+        "sources": sources,
+        "concepts": concepts,
+        "index": index_md,
+    }

@@ -49,11 +49,23 @@ class WikiIndex:
         self._config = config or TreeConfig()
         self._pool = AgentPool(model_name, base_url, api_key, self._config, extra_body)
 
-    async def build(self, pdf_path: str) -> dict:
+    async def build(
+        self,
+        pdf_path: str | None = None,
+        *,
+        texts: list[str] | None = None,
+        doc_name: str | None = None,
+    ) -> dict:
         """Run the full pipeline and return the structured index.
 
+        Provide either pdf_path (loads and parses the PDF) or texts (pre-extracted
+        page strings, skipping PDF loading). When using texts, doc_name is used for
+        the result title/doc_name fields; defaults to "document" if omitted.
+
         Args:
-            pdf_path: path to the PDF file.
+            pdf_path: path to the PDF file. Mutually exclusive with texts.
+            texts: pre-extracted page text strings, one entry per page.
+            doc_name: document name used in result when texts is provided.
 
         Returns:
             Dict with keys:
@@ -63,81 +75,135 @@ class WikiIndex:
               - nodes: list of nested section dicts (see SectionNode.to_dict)
               - pages: dict mapping 1-based page index to page text
         """
-        logger.info("loading_pdf", path=pdf_path)
-        pages = load_pages(pdf_path)
-        texts = [page_to_text(p) for p in pages]
-        total_pages = len(texts)
-        start_index = 1
-        logger.info("pdf_loaded", pages=total_pages)
+        if texts is not None:
+            logger.info("using_provided_texts", count=len(texts))
+            page_texts = texts
+            name = doc_name or "document"
+            p = Path(name)
+        elif pdf_path is not None:
+            logger.info("loading_pdf", path=pdf_path)
+            pages = load_pages(pdf_path)
+            page_texts = [page_to_text(pg) for pg in pages]
+            p = Path(pdf_path)
+        else:
+            raise ValueError("Provide either pdf_path or texts.")
 
-        sections = await generate_flat_sections(texts, self._pool, self._config, start_index)
+        total_pages = len(page_texts)
+        start_index = 1
+        logger.info("pages_ready", pages=total_pages)
+
+        sections = await generate_flat_sections(page_texts, self._pool, self._config, start_index)
         logger.info("sections_generated", count=len(sections))
+
+        if not sections:
+            from openindex.models import FlatSection
+            logger.warning("no_sections_found_using_fallback", doc=p.stem)
+            sections = [FlatSection(structure="1", title=p.stem, physical_index=start_index)]
 
         sections = add_preface_if_needed(sections, start_index)
 
-        sections = await verify_and_fix(sections, texts, self._pool, self._config, start_index)
+        sections = await verify_and_fix(sections, page_texts, self._pool, self._config, start_index)
         logger.info("sections_verified", count=len(sections))
 
         nodes = flat_to_tree(sections, total_pages, start_index)
         logger.info("tree_built", roots=len(nodes))
 
-        nodes = await expand_large_nodes(nodes, texts, self._pool, self._config, start_index)
+        nodes = await expand_large_nodes(nodes, page_texts, self._pool, self._config, start_index)
         logger.info("nodes_expanded")
 
-        nodes = await add_summaries(nodes, texts, self._pool, self._config, start_index)
+        nodes = await add_summaries(nodes, page_texts, self._pool, self._config, start_index)
         description = await generate_doc_description(nodes, self._pool)
         logger.info("summaries_done")
 
-        p = Path(pdf_path)
         return {
             "title": p.stem,
             "doc_name": p.name,
             "description": description,
             "nodes": [n.to_dict() for n in nodes],
-            "pages": {start_index + i: text for i, text in enumerate(texts)},
+            "pages": {start_index + i: text for i, text in enumerate(page_texts)},
         }
 
-    def build_sync(self, pdf_path: str) -> dict:
+    def build_sync(
+        self,
+        pdf_path: str | None = None,
+        *,
+        texts: list[str] | None = None,
+        doc_name: str | None = None,
+    ) -> dict:
         """Synchronous wrapper around build().
 
         Args:
             pdf_path: path to the PDF file.
+            texts: pre-extracted page text strings.
+            doc_name: document name used in result when texts is provided.
 
         Returns:
             Same dict as build().
         """
-        return asyncio.run(self.build(pdf_path))
+        return asyncio.run(self.build(pdf_path, texts=texts, doc_name=doc_name))
 
-    async def build_wiki(self, pdf_path: str, wiki_dir: str) -> dict:
-        """Run the full pipeline and write an OpenKB-compatible wiki folder.
+    async def build_wiki(
+        self,
+        pdf_path: str | None = None,
+        wiki_dir: str | None = None,
+        *,
+        texts: list[str] | None = None,
+        doc_name: str | None = None,
+    ) -> dict:
+        """Run the full pipeline and compile wiki artifacts.
 
         Calls build() then compiles wiki artifacts: sources JSON, summary
         Markdown, concept pages, backlinks, and index.md.
 
+        When wiki_dir is provided, artifacts are written to disk and the
+        method returns the same dict as build(). When wiki_dir is None,
+        artifacts are returned in-memory under a "wiki" key:
+          result["wiki"] = {
+            "summary": str,
+            "sources": list[dict],
+            "concepts": dict[slug, {"brief": str, "content": str}],
+            "index": str,
+          }
+
         Args:
-            pdf_path: path to the PDF file.
+            pdf_path: path to the PDF file. Mutually exclusive with texts.
             wiki_dir: path to the wiki root directory (created if missing).
+                      Pass None to return wiki artifacts in the result dict.
+            texts: pre-extracted page text strings, skips PDF loading.
+            doc_name: document name used in result when texts is provided.
 
         Returns:
-            Same dict as build().
+            build() dict, with "wiki" key added when wiki_dir is None.
         """
-        from openindex.wiki.compiler import compile_wiki
+        from openindex.wiki.compiler import compile_wiki, compile_wiki_to_dict
 
-        result = await self.build(pdf_path)
-        await compile_wiki(result, Path(wiki_dir), self._pool)
+        result = await self.build(pdf_path, texts=texts, doc_name=doc_name)
+        if wiki_dir is None:
+            result["wiki"] = await compile_wiki_to_dict(result, self._pool)
+        else:
+            await compile_wiki(result, Path(wiki_dir), self._pool)
         return result
 
-    def build_wiki_sync(self, pdf_path: str, wiki_dir: str) -> dict:
+    def build_wiki_sync(
+        self,
+        pdf_path: str | None = None,
+        wiki_dir: str | None = None,
+        *,
+        texts: list[str] | None = None,
+        doc_name: str | None = None,
+    ) -> dict:
         """Synchronous wrapper around build_wiki().
 
         Args:
             pdf_path: path to the PDF file.
-            wiki_dir: path to the wiki root directory.
+            wiki_dir: path to the wiki root directory. None returns wiki in result dict.
+            texts: pre-extracted page text strings.
+            doc_name: document name used in result when texts is provided.
 
         Returns:
-            Same dict as build().
+            Same dict as build_wiki().
         """
-        return asyncio.run(self.build_wiki(pdf_path, wiki_dir))
+        return asyncio.run(self.build_wiki(pdf_path, wiki_dir, texts=texts, doc_name=doc_name))
 
     @staticmethod
     def print_result(result: dict) -> None:
