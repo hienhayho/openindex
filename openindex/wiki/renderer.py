@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from openindex.wiki.models import WikiDict
+
 
 # ---------------------------------------------------------------------------
 # Sources JSON
@@ -550,11 +552,8 @@ def add_related_link(wiki_dir: Path, concept_slug: str, doc_name: str, source_fi
 # Unified index builder
 # ---------------------------------------------------------------------------
 
-def save_wiki_dicts_to_dir(wiki_dicts: list[dict], wiki_dir: str | Path) -> Path:
-    """Write a list of in-memory wiki dicts to disk in wiki folder layout.
-
-    Each dict must be the output of compile_wiki_to_dict():
-      - doc_name, description, summary, sources, concepts, index keys.
+def save_wiki_dicts_to_dir(wiki_dicts: list[WikiDict], wiki_dir: str | Path) -> Path:
+    """Write a list of WikiDict objects to disk in wiki folder layout.
 
     Writes:
       - sources/<doc_name>.json
@@ -565,7 +564,7 @@ def save_wiki_dicts_to_dir(wiki_dicts: list[dict], wiki_dir: str | Path) -> Path
       - index.md            (unified across all dicts)
 
     Args:
-        wiki_dicts: list of wiki dicts from compile_wiki_to_dict().
+        wiki_dicts: list of WikiDict from compile_wiki_to_dict().
         wiki_dir: root wiki directory (created if missing).
 
     Returns:
@@ -575,54 +574,49 @@ def save_wiki_dicts_to_dir(wiki_dicts: list[dict], wiki_dir: str | Path) -> Path
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
     seen_slugs: set[str] = set()
-    # track doc_name → its concept slugs for backlinks
     doc_slugs: dict[str, list[str]] = {}
 
     for wiki in wiki_dicts:
-        doc_name = wiki.get("doc_name", "document")
+        doc_name = wiki.doc_name
         doc_slugs[doc_name] = []
 
         # --- sources/<doc_name>.json ---
         sources_dir = wiki_dir / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)
-        sources_path = sources_dir / f"{doc_name}.json"
-        sources_path.write_text(
-            json.dumps(wiki.get("sources", []), ensure_ascii=False, indent=2),
+        sources_data = [s.model_dump() for s in wiki.sources]
+        (sources_dir / f"{doc_name}.json").write_text(
+            json.dumps(sources_data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
         # --- summaries/<doc_name>.md ---
         summaries_dir = wiki_dir / "summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = summaries_dir / f"{doc_name}.md"
-        summary_path.write_text(wiki.get("summary", ""), encoding="utf-8")
+        (summaries_dir / f"{doc_name}.md").write_text(wiki.summary, encoding="utf-8")
 
         # --- concepts/<slug>.md (first occurrence wins) ---
         concepts_dir = wiki_dir / "concepts"
         concepts_dir.mkdir(parents=True, exist_ok=True)
-        for slug, data in wiki.get("concepts", {}).items():
+        for slug, entry in wiki.concepts.items():
             doc_slugs[doc_name].append(slug)
             if slug in seen_slugs:
                 continue
             seen_slugs.add(slug)
-            brief = data.get("brief", "")
-            content = data.get("content", "")
-            brief_line = f"brief: {json.dumps(brief, ensure_ascii=False)}"
+            brief_line = f"brief: {json.dumps(entry.brief, ensure_ascii=False)}"
             sources_line = f'sources: {json.dumps([f"summaries/{doc_name}.md"], ensure_ascii=False)}'
             frontmatter = f"---\n{sources_line}\n{brief_line}\n---\n\n"
-            (concepts_dir / f"{slug}.md").write_text(frontmatter + content, encoding="utf-8")
+            (concepts_dir / f"{slug}.md").write_text(frontmatter + entry.content, encoding="utf-8")
 
     # --- backlinks: summary ↔ concepts + related cross-refs ---
     for wiki in wiki_dicts:
-        doc_name = wiki.get("doc_name", "document")
+        doc_name = wiki.doc_name
         slugs = doc_slugs.get(doc_name, [])
-        related = wiki.get("related", [])
-        all_slugs = slugs + [s for s in related if s not in slugs]
+        all_slugs = slugs + [s for s in wiki.related if s not in slugs]
         if all_slugs:
             backlink_summary(wiki_dir, doc_name, all_slugs)
             backlink_concepts(wiki_dir, doc_name, all_slugs)
         source_file = f"summaries/{doc_name}.md"
-        for slug in related:
+        for slug in wiki.related:
             add_related_link(wiki_dir, slug, doc_name, source_file)
 
     # --- index.md (unified) ---
@@ -632,17 +626,14 @@ def save_wiki_dicts_to_dir(wiki_dicts: list[dict], wiki_dir: str | Path) -> Path
     return wiki_dir
 
 
-def build_unified_index(wiki_dicts: list[dict]) -> str:
-    """Build a unified index.md string from multiple in-memory wiki dicts.
-
-    Each dict must be the output of compile_wiki_to_dict() and contain
-    "doc_name", "concepts", and optionally "description".
+def build_unified_index(wiki_dicts: list[WikiDict]) -> str:
+    """Build a unified index.md string from multiple WikiDict objects.
 
     Concepts with the same slug across documents are merged — the first
     occurrence's brief is used.
 
     Args:
-        wiki_dicts: list of wiki dicts, each from compile_wiki_to_dict().
+        wiki_dicts: list of WikiDict from compile_wiki_to_dict().
 
     Returns:
         Unified index.md Markdown string.
@@ -651,16 +642,14 @@ def build_unified_index(wiki_dicts: list[dict]) -> str:
     seen_concepts: dict[str, str] = {}
 
     for wiki in wiki_dicts:
-        doc_name = wiki.get("doc_name", "")
-        description = wiki.get("description", "")
-        entry = f"- [[summaries/{doc_name}]] (pageindex)"
-        if description:
-            entry += f" — {description}"
+        entry = f"- [[summaries/{wiki.doc_name}]] (pageindex)"
+        if wiki.description:
+            entry += f" — {wiki.description}"
         lines.append(entry)
 
-        for slug, data in wiki.get("concepts", {}).items():
+        for slug, concept in wiki.concepts.items():
             if slug not in seen_concepts:
-                seen_concepts[slug] = data.get("brief", "")
+                seen_concepts[slug] = concept.brief
 
     lines += ["", "## Concepts", ""]
     for slug, brief in sorted(seen_concepts.items()):

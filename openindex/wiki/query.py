@@ -7,7 +7,7 @@ import contextlib
 import json
 from pathlib import Path
 
-from agno.agent import Agent
+from agno.agent import Agent, Message
 from agno.models.openai.like import OpenAILike
 
 _QUERY_INSTRUCTIONS = """\
@@ -219,6 +219,8 @@ class WikiQueryAgent:
             md_files = sorted(p.name for p in target.iterdir() if p.suffix == ".md")
             return "\n".join(md_files) if md_files else "No files found."
 
+        self.read_file = read_file
+
         model = OpenAILike(
             id=model_name,
             api_key=api_key,
@@ -241,7 +243,16 @@ class WikiQueryAgent:
         Returns:
             Answer string grounded in wiki content.
         """
-        result = await self._agent.arun(question)
+        messages = [
+            Message(role="user", content=question),
+            Message(
+                role="tool",
+                content=self.read_file("index.md"),
+                tool_args={"path": "index.md"},
+                tool_name="read_file",
+            ),
+        ]
+        result = await self._agent.arun(input=messages)
         return result.content or ""
 
     def ask_sync(self, question: str) -> str:

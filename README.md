@@ -16,6 +16,7 @@ Unlike traditional RAG (which rediscovers knowledge on every query), OpenIndex c
 - [Installation](#installation)
 - [Usage](#usage)
   - [Index a PDF](#index-a-pdf)
+  - [Return types](#return-types)
   - [Return wiki as dict](#return-wiki-as-dict-not-queryable)
   - [Query the wiki](#query-the-wiki)
   - [Async usage](#async-usage)
@@ -68,7 +69,7 @@ index = WikiIndex(
     config=TreeConfig(max_parallel_llm_calls=8),
 )
 
-result = index.build_wiki_sync("paper.pdf", "./wiki")
+result = index.build_wiki_sync("paper.pdf", "./wiki")  # returns BuildResult
 WikiIndex.print_result(result)
 ```
 
@@ -84,49 +85,116 @@ wiki/
 └── sources/<doc>.json    # full per-page text
 ```
 
+### Return types
+
+All `build_wiki` / `build_wiki_sync` calls return a `BuildResult` pydantic model:
+
+```python
+from openindex import BuildResult, WikiDict
+from openindex.models import SectionNode
+
+result: BuildResult = index.build_wiki_sync("paper.pdf", "./wiki")
+
+result.title        # str — document stem, e.g. "paper"
+result.doc_name     # str — filename, e.g. "paper.pdf"
+result.description  # str — one-paragraph document summary
+result.nodes        # list[SectionNode] — nested section tree
+result.pages        # dict[int, str] — 1-based page index → page text
+result.wiki         # WikiDict — compiled wiki artifacts (always set)
+```
+
+`result.wiki` is a `WikiDict`:
+
+```python
+result.wiki.doc_name     # str — document stem
+result.wiki.description  # str — one-paragraph document summary
+result.wiki.summary      # str — full section tree as Markdown
+result.wiki.sources      # list[SourcePage] — per-page content
+result.wiki.concepts     # dict[str, ConceptEntry] — concept pages keyed by slug
+result.wiki.related      # list[str] — related concept slugs (from LLM planner)
+result.wiki.index        # str — index.md content for this document
+```
+
+`WikiDict` is JSON-serializable via `.model_dump()` or `.model_dump_json()` for database storage.
+
+Sample `BuildResult`:
+
+```python
+BuildResult(
+    title="paper",
+    doc_name="paper.pdf",
+    description="This paper introduces a novel attention mechanism for transformer models...",
+    nodes=[
+        SectionNode(
+            title="Introduction",
+            start_index=1,
+            end_index=3,
+            depth=0,
+            summary="Introduces the problem of efficient attention in long sequences.",
+            children=[
+                SectionNode(
+                    title="Motivation",
+                    start_index=1,
+                    end_index=2,
+                    depth=1,
+                    summary="Existing approaches scale quadratically with sequence length.",
+                    children=[],
+                ),
+            ],
+        ),
+        SectionNode(title="Method", start_index=4, end_index=8, depth=0, summary="...", children=[]),
+    ],
+    pages={
+        1: "Page 1 text...",
+        2: "Page 2 text...",
+    },
+    wiki=WikiDict(
+        doc_name="paper",
+        description="This paper introduces a novel attention mechanism...",
+        summary="---\ndoc_type: pageindex\nfull_text: sources/paper.json\n---\n\n# Introduction (pages 1–3)\n...",
+        sources=[
+            SourcePage(page=1, content="Page 1 text...", images=[]),
+            SourcePage(page=2, content="Page 2 text...", images=[]),
+        ],
+        concepts={
+            "attention-mechanism": ConceptEntry(
+                brief="A mechanism for focusing on relevant parts of the input.",
+                content="## Attention Mechanism\n\nAttention allows models to...",
+            ),
+        },
+        related=["transformer"],
+        index="# Knowledge Base Index\n\n## Documents\n\n- [[summaries/paper]] (pageindex)...",
+    ),
+)
+```
+
 ### Return wiki as dict (Not queryable)
 
-Omit `wiki_dir` to get all artifacts as a dict instead of writing to disk. The result is not queryable by `WikiQueryAgent` — use this for downstream processing or custom storage. Useful for pipelines that process multiple documents before persisting.
+Omit `wiki_dir` to get wiki artifacts in-memory only — nothing written to disk. The result is not queryable by `WikiQueryAgent`. Useful for pipelines that process multiple documents before persisting.
 
 ```python
 result = index.build_wiki_sync("paper.pdf")  # no wiki_dir
-wiki = result["wiki"]
+wiki: WikiDict = result.wiki
 ```
 
-The `wiki` dict schema:
+To save to disk later:
 
 ```python
-{
-    "doc_name": str,          # document stem, e.g. "paper"
-    "description": str,       # one-paragraph document summary
-    "summary": str,           # full section tree as Markdown (summaries/<doc>.md content)
-    "sources": [              # per-page content array (sources/<doc>.json content)
-        {
-            "page": int,      # 1-based page number
-            "content": str,   # page text
-            "images": list,   # always [] (reserved)
-        },
-        ...
-    ],
-    "concepts": {             # generated concept pages, keyed by slug
-        "<slug>": {
-            "brief": str,     # one-sentence definition
-            "content": str,   # full Markdown body
-        },
-        ...
-    },
-    "related": [str],         # concept slugs related to this doc (from LLM planner)
-    "index": str,             # index.md content for this document alone
-}
+from openindex.wiki import save_wiki_dicts_to_dir
+
+wiki1 = index.build_wiki_sync("paper1.pdf").wiki
+wiki2 = index.build_wiki_sync("paper2.pdf").wiki
+
+save_wiki_dicts_to_dir([wiki1, wiki2], "./wiki")
 ```
 
-To build a unified index across multiple documents:
+To build a unified index string across multiple documents:
 
 ```python
 from openindex.wiki import build_unified_index
 
-wiki1 = index.build_wiki_sync("paper1.pdf")["wiki"]
-wiki2 = index.build_wiki_sync("paper2.pdf")["wiki"]
+wiki1 = index.build_wiki_sync("paper1.pdf").wiki
+wiki2 = index.build_wiki_sync("paper2.pdf").wiki
 
 index_md = build_unified_index([wiki1, wiki2])
 print(index_md)

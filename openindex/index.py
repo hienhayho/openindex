@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 from openindex.agents import AgentPool
+from openindex.wiki.models import BuildResult
 from openindex.config import TreeConfig
 from openindex.parser import load_pages, page_to_text
 from openindex.pipeline.expander import expand_large_nodes
@@ -55,7 +56,7 @@ class WikiIndex:
         *,
         texts: list[str] | None = None,
         doc_name: str | None = None,
-    ) -> dict:
+    ) -> BuildResult:
         """Run the full pipeline and return the structured index.
 
         Provide either pdf_path (loads and parses the PDF) or texts (pre-extracted
@@ -92,36 +93,47 @@ class WikiIndex:
         start_index = 1
         logger.info("pages_ready", pages=total_pages)
 
-        sections = await generate_flat_sections(page_texts, self._pool, self._config, start_index)
+        sections = await generate_flat_sections(
+            page_texts, self._pool, self._config, start_index
+        )
         logger.info("sections_generated", count=len(sections))
 
         if not sections:
             from openindex.models import FlatSection
+
             logger.warning("no_sections_found_using_fallback", doc=p.stem)
-            sections = [FlatSection(structure="1", title=p.stem, physical_index=start_index)]
+            sections = [
+                FlatSection(structure="1", title=p.stem, physical_index=start_index)
+            ]
 
         sections = add_preface_if_needed(sections, start_index)
 
-        sections = await verify_and_fix(sections, page_texts, self._pool, self._config, start_index)
+        sections = await verify_and_fix(
+            sections, page_texts, self._pool, self._config, start_index
+        )
         logger.info("sections_verified", count=len(sections))
 
         nodes = flat_to_tree(sections, total_pages, start_index)
         logger.info("tree_built", roots=len(nodes))
 
-        nodes = await expand_large_nodes(nodes, page_texts, self._pool, self._config, start_index)
+        nodes = await expand_large_nodes(
+            nodes, page_texts, self._pool, self._config, start_index
+        )
         logger.info("nodes_expanded")
 
-        nodes = await add_summaries(nodes, page_texts, self._pool, self._config, start_index)
+        nodes = await add_summaries(
+            nodes, page_texts, self._pool, self._config, start_index
+        )
         description = await generate_doc_description(nodes, self._pool)
         logger.info("summaries_done")
 
-        return {
-            "title": p.stem,
-            "doc_name": p.name,
-            "description": description,
-            "nodes": [n.to_dict() for n in nodes],
-            "pages": {start_index + i: text for i, text in enumerate(page_texts)},
-        }
+        return BuildResult(
+            title=p.stem,
+            doc_name=p.name,
+            description=description,
+            nodes=nodes,
+            pages={start_index + i: text for i, text in enumerate(page_texts)},
+        )
 
     def build_sync(
         self,
@@ -129,7 +141,7 @@ class WikiIndex:
         *,
         texts: list[str] | None = None,
         doc_name: str | None = None,
-    ) -> dict:
+    ) -> BuildResult:
         """Synchronous wrapper around build().
 
         Args:
@@ -149,21 +161,16 @@ class WikiIndex:
         *,
         texts: list[str] | None = None,
         doc_name: str | None = None,
-    ) -> dict:
+    ) -> BuildResult:
         """Run the full pipeline and compile wiki artifacts.
 
         Calls build() then compiles wiki artifacts: sources JSON, summary
         Markdown, concept pages, backlinks, and index.md.
 
-        When wiki_dir is provided, artifacts are written to disk and the
-        method returns the same dict as build(). When wiki_dir is None,
-        artifacts are returned in-memory under a "wiki" key:
-          result["wiki"] = {
-            "summary": str,
-            "sources": list[dict],
-            "concepts": dict[slug, {"brief": str, "content": str}],
-            "index": str,
-          }
+        Always sets result["wiki"] as a WikiDict. When wiki_dir is provided,
+        artifacts are also written to disk (with LLM-based concept merging
+        against existing concepts). When wiki_dir is None, artifacts are
+        in-memory only.
 
         Args:
             pdf_path: path to the PDF file. Mutually exclusive with texts.
@@ -175,13 +182,14 @@ class WikiIndex:
         Returns:
             build() dict, with "wiki" key added when wiki_dir is None.
         """
-        from openindex.wiki.compiler import compile_wiki, compile_wiki_to_dict
+        from openindex.wiki.compiler import compile_wiki
 
         result = await self.build(pdf_path, texts=texts, doc_name=doc_name)
-        if wiki_dir is None:
-            result["wiki"] = await compile_wiki_to_dict(result, self._pool)
-        else:
-            await compile_wiki(result, Path(wiki_dir), self._pool)
+        result.wiki = await compile_wiki(
+            result.model_dump(),
+            self._pool,
+            wiki_dir=Path(wiki_dir) if wiki_dir else None,
+        )
         return result
 
     def build_wiki_sync(
@@ -191,7 +199,7 @@ class WikiIndex:
         *,
         texts: list[str] | None = None,
         doc_name: str | None = None,
-    ) -> dict:
+    ) -> BuildResult:
         """Synchronous wrapper around build_wiki().
 
         Args:
@@ -203,22 +211,24 @@ class WikiIndex:
         Returns:
             Same dict as build_wiki().
         """
-        return asyncio.run(self.build_wiki(pdf_path, wiki_dir, texts=texts, doc_name=doc_name))
+        return asyncio.run(
+            self.build_wiki(pdf_path, wiki_dir, texts=texts, doc_name=doc_name)
+        )
 
     @staticmethod
-    def print_result(result: dict) -> None:
-        """Print a build() result in a human-readable tree format.
+    def print_result(result: BuildResult) -> None:
+        """Print a BuildResult in a human-readable tree format.
 
         Prints title, page count, description, and the full section tree
         with indented headings and page ranges.
 
         Args:
-            result: dict returned by build() or build_wiki().
+            result: BuildResult returned by build() or build_wiki().
         """
-        title = result.get("title", "")
-        description = result.get("description", "")
-        pages = result.get("pages", {})
-        nodes_data = result.get("nodes", [])
+        title = result.title
+        description = result.description
+        pages = result.pages
+        nodes_data = result.nodes
 
         print(f"{'=' * 60}")
         print(f"  {title}")
