@@ -190,10 +190,13 @@ async def compile_wiki_to_dict(
 
     Returns:
         Dict with keys:
+          - doc_name: document stem
+          - description: one-paragraph document summary
           - summary: Markdown string (section tree with frontmatter)
           - sources: list of {"page": N, "content": "..."} dicts
           - concepts: dict mapping slug → {"brief": str, "content": str}
-          - index: Markdown string (index.md content)
+          - related: list of related concept slugs (from LLM planner)
+          - index: Markdown string (index.md content for this doc alone)
     """
     from openindex.wiki.renderer import render_nodes, sanitize_slug, strip_ghost_wikilinks
 
@@ -222,7 +225,7 @@ async def compile_wiki_to_dict(
         build_concepts_plan_prompt(overview, "(none yet)"),
         pool.sem,
     )
-    logger.info("concept_plan_done", create=len(plan.create), update=len(plan.update))
+    logger.info("concept_plan_done", create=len(plan.create), update=len(plan.update), related=len(plan.related))
 
     # --- Wikilink whitelist ---
     planned_slugs = {sanitize_slug(c.name) for c in plan.create + plan.update}
@@ -264,6 +267,7 @@ async def compile_wiki_to_dict(
         index_lines.append(entry)
     index_md = "\n".join(index_lines)
 
+    related_slugs = [sanitize_slug(s) for s in plan.related]
     logger.info("compile_wiki_to_dict_done", doc=doc_name, concepts=len(concepts))
     return {
         "doc_name": doc_name,
@@ -271,5 +275,6 @@ async def compile_wiki_to_dict(
         "summary": summary_md,
         "sources": sources,
         "concepts": concepts,
+        "related": related_slugs,
         "index": index_md,
     }

@@ -18,6 +18,7 @@ Unlike traditional RAG (which rediscovers knowledge on every query), OpenIndex c
   - [Index a PDF](#index-a-pdf)
   - [Return wiki as dict](#return-wiki-as-dict-not-queryable)
   - [Query the wiki](#query-the-wiki)
+  - [Async usage](#async-usage)
 - [License](#license)
 
 ## Installation
@@ -114,6 +115,7 @@ The `wiki` dict schema:
         },
         ...
     },
+    "related": [str],         # concept slugs related to this doc (from LLM planner)
     "index": str,             # index.md content for this document alone
 }
 ```
@@ -155,6 +157,62 @@ print(answer)
 ```
 
 See [`tools/query.py`](tools/query.py) for a full example.
+
+### Async usage
+
+Both `WikiIndex` and `WikiQueryAgent` expose async methods directly. Use these inside an existing event loop (FastAPI, async scripts, etc.) to avoid the overhead of `asyncio.run()`.
+
+**Index:**
+
+```python
+import asyncio
+import os
+import json
+from dotenv import load_dotenv
+from openindex import WikiIndex, TreeConfig
+
+load_dotenv()
+
+async def main():
+    index = WikiIndex(
+        model_name=os.getenv("OPENAI_MODEL_NAME"),
+        base_url=os.getenv("OPENAI_BASE_URL"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        extra_body=json.loads(os.getenv("OPENAI_EXTRA_BODY", "{}")),
+        config=TreeConfig(max_parallel_llm_calls=8),
+    )
+
+    result = await index.build_wiki("paper.pdf", "./wiki")
+    WikiIndex.print_result(result)
+
+asyncio.run(main())
+```
+
+**Query:**
+
+```python
+import asyncio
+import os
+import json
+from dotenv import load_dotenv
+from openindex import WikiQueryAgent
+
+load_dotenv()
+
+async def main():
+    agent = WikiQueryAgent(
+        wiki_dir="./wiki",
+        model_name=os.getenv("OPENAI_MODEL_NAME"),
+        base_url=os.getenv("OPENAI_BASE_URL"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        extra_body=json.loads(os.getenv("OPENAI_EXTRA_BODY", "{}")),
+    )
+
+    answer = await agent.ask("What is RAG?")
+    print(answer)
+
+asyncio.run(main())
+```
 
 ## License
 
