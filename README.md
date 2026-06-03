@@ -202,7 +202,7 @@ print(index_md)
 
 ### Query the wiki
 
-The query agent searches the compiled wiki to answer questions, fetching only the relevant pages.
+The query agent searches the compiled wiki to answer questions, always fetching actual page content before responding.
 
 ```python
 import os
@@ -218,10 +218,25 @@ agent = WikiQueryAgent(
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     extra_body=json.loads(os.getenv("OPENAI_EXTRA_BODY", "{}")),
+    cite=True,  # append \source{doc, p.N} after every factual claim
 )
 
 answer = agent.ask_sync("What is RAG?")
 print(answer)
+```
+
+**`cite=True`** (default) — every factual sentence is followed by an inline source marker:
+
+```
+RAG combines retrieval with generation to ground LLM outputs. \source{rag-paper, p.3}
+Two retrieval strategies are used: sparse (BM25) and dense (DPR). \source{rag-paper, p.4-5}
+```
+
+**`cite=False`** — plain answer, no source markers:
+
+```python
+agent = WikiQueryAgent(..., cite=False)
+answer = agent.ask_sync("What is RAG?")
 ```
 
 See [`tools/query.py`](tools/query.py) for a full example.

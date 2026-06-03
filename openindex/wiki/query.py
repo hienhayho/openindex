@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from pathlib import Path
 
 from agno.agent import Agent, Message
 from agno.models.openai.like import OpenAILike
 
-_QUERY_INSTRUCTIONS = """\
+_WIKI_LAYOUT = """\
 You are a knowledge-base Q&A agent. Answer questions by searching the wiki.
 
 ## Wiki layout
@@ -41,11 +42,15 @@ Fetch specific pages from a pageindex document's full-text JSON source.
 
 When to use:
 - ONLY for documents marked doc_type: pageindex in their summary frontmatter.
-- When the summary is not enough — you need verbatim text or exact details.
+- Always fetch actual page content before answering — summaries alone are not enough.
 - Target the specific section page range shown in the summary heading.
 
 How to use:
-- doc_name: filename stem only, no extension. E.g. for sources/paper.json -> "paper".
+- doc_name: the stem from the wikilink in index.md.
+  index.md lists documents as: [[summaries/{doc_name}]] (pageindex) — brief
+  summaries/{doc_name}.md also shows: full_text: sources/{doc_name}.json in frontmatter.
+  Use that {doc_name} directly — no extension, no path prefix.
+  Example: [[summaries/paper]] → doc_name = "paper"
 - pages: compact range spec. Examples: "3", "3-7", "3-7,12", "1-3,8,10-12".
 - Fetch tight ranges (2-5 pages). Never request the entire document.
 - If a section spans pages 3-7, call get_page_content("paper", "3-7").
@@ -65,32 +70,60 @@ How to use:
 
 Follow this order for every question:
 
-1. Catalog — read_file("index.md").
-   Identify which documents and concepts are relevant.
-   Each document is listed as [[summaries/{doc}]] (pageindex) — brief.
-
+1. Catalog — read_file("index.md"). Identify which documents and concepts are relevant.
 2. Summary — read_file("summaries/{doc}.md") for each relevant document.
-   Read section headings and their page ranges. Often enough to answer.
-   If the summary links a related concept, read it next.
-
-3. Concepts — read_file("concepts/{slug}.md") for cross-document topics.
-   Concept pages synthesize information from multiple documents.
-
-4. Deep dive — get_page_content(doc_name, pages) only when you need details
-   beyond the summary. Use the page ranges from the summary headings.
-   Prefer the tightest range that covers the relevant section.
-
+   Read section headings and their page ranges to find the relevant sections.
+3. Concepts — read_file("concepts/{slug}.md") for cross-document topics if relevant.
+4. Page content — ALWAYS call get_page_content(doc_name, pages) for the relevant
+   sections identified in the summary. Use the exact page ranges from the summary headings.
+   Do not answer from summaries alone — always fetch the actual page text.
+   Prefer the tightest range that covers the relevant section; expand if needed.
 5. Discover — if index.md seems incomplete, use list_wiki_files("summaries") or
    list_wiki_files("concepts") to find pages not listed in the index.
+"""
 
-6. Answer — synthesize a clear, concise response citing specific documents or sections.
-   Reference as: "According to {doc}, section '{title}' (pages N-M), ..."
+_ANSWER_NO_CITE = """\
+6. Answer — output ONLY the final answer. Do not include any preamble, narration,
+   reasoning steps, or explanation of what you searched. Start directly with the answer content.
+   Do NOT include any source citations or references in the answer.
 
 ## Rules
 
 - Answer based ONLY on wiki content. Do not use prior knowledge to fill gaps.
 - If information is not in the wiki, say so clearly.
-- Before each tool call, output one short sentence explaining what you are looking for.
+- ALWAYS fetch page content with get_page_content before answering.
+- Do NOT add any citations, source markers, or page references in the answer.
+- Do NOT narrate your retrieval process ("I will now check...", "Based on the summary...").
+- Output ONLY the final answer text. Nothing before it.
+- Never call get_page_content on a short document (doc_type: short) — use read_file instead.
+- Never fetch more pages than needed. Start narrow; expand only if the answer is not there.
+"""
+
+_ANSWER_WITH_CITE = """\
+6. Answer — output ONLY the final answer. Do not include any preamble, narration,
+   reasoning steps, or explanation of what you searched. Start directly with the answer content.
+   After EVERY sentence or clause that states a fact, append a source marker:
+     \\source{doc_name, p.N}       — single page
+     \\source{doc_name, p.N-M}     — page range
+     \\source{doc_name, p.N, p.M}  — non-consecutive pages
+   Example:
+     "The attention mechanism scales quadratically. \\source{paper, p.3}
+      Two variants exist: additive and dot-product. \\source{paper, p.4-5}"
+   If a sentence draws from multiple documents:
+     "This appears in both datasets. \\source{paper1, p.2} \\source{paper2, p.7}"
+   Do NOT group all sources at the end — every claim must have its marker inline.
+
+## Rules
+
+- Answer based ONLY on wiki content. Do not use prior knowledge to fill gaps.
+- If information is not in the wiki, say so clearly.
+- ALWAYS fetch page content with get_page_content before answering.
+- Every factual sentence MUST be followed by a \\source{} marker. No exceptions.
+- You MAY ONLY cite a page you have actually fetched via get_page_content in this session.
+  NEVER invent or guess page numbers. If you have not fetched a page, you cannot cite it.
+  If you cannot cite a claim, do not make it.
+- Do NOT narrate your retrieval process ("I will now check...", "Based on the summary...").
+- Output ONLY the final answer text. Nothing before it.
 - Never call get_page_content on a short document (doc_type: short) — use read_file instead.
 - Never fetch more pages than needed. Start narrow; expand only if the answer is not there.
 """
@@ -142,6 +175,7 @@ class WikiQueryAgent:
         base_url: str,
         api_key: str,
         extra_body: dict | None = None,
+        cite: bool = True,
     ):
         """Initialize the query agent.
 
@@ -151,6 +185,8 @@ class WikiQueryAgent:
             base_url: API base URL.
             api_key: API key.
             extra_body: Optional extra request body fields forwarded to the API.
+            cite: If True, agent appends \\source{doc, p.N} markers after every
+                  factual claim. If False, answer has no citations. Default True.
         """
         self._wiki_dir = Path(wiki_dir).resolve()
         root = self._wiki_dir
@@ -219,7 +255,8 @@ class WikiQueryAgent:
             md_files = sorted(p.name for p in target.iterdir() if p.suffix == ".md")
             return "\n".join(md_files) if md_files else "No files found."
 
-        self.read_file = read_file
+        self._read_file = read_file
+        self._cite = cite
 
         model = OpenAILike(
             id=model_name,
@@ -227,15 +264,68 @@ class WikiQueryAgent:
             base_url=base_url,
             extra_body=extra_body,
         )
+        instructions = _WIKI_LAYOUT + (_ANSWER_WITH_CITE if cite else _ANSWER_NO_CITE)
         self._agent = Agent(
             model=model,
             tools=[read_file, get_page_content, list_wiki_files],
-            instructions=_QUERY_INSTRUCTIONS,
+            instructions=instructions,
             debug_mode=True,
         )
 
+    @staticmethod
+    def _fetched_pages(tools) -> dict[str, set[int]]:
+        """Build map of doc_name → set of page numbers actually fetched via get_page_content."""
+        fetched: dict[str, set[int]] = {}
+        for t in (tools or []):
+            if t.tool_name != "get_page_content":
+                continue
+            args = t.tool_args or {}
+            doc = args.get("doc_name", "")
+            pages_str = args.get("pages", "")
+            if doc and pages_str:
+                fetched.setdefault(doc, set()).update(_parse_pages(pages_str))
+        return fetched
+
+    @staticmethod
+    def _cited_pages(answer: str) -> list[tuple[str, list[int]]]:
+        """Extract (doc_name, pages) pairs from \\source{} markers in answer."""
+        cited: list[tuple[str, list[int]]] = []
+        for m in re.finditer(r"\\source\{([^}]+)\}", answer):
+            parts = [p.strip() for p in m.group(1).split(",")]
+            if not parts:
+                continue
+            doc = parts[0]
+            pages: list[int] = []
+            for part in parts[1:]:
+                part = part.strip()
+                if part.startswith("p."):
+                    part = part[2:]
+                pages.extend(_parse_pages(part))
+            if doc and pages:
+                cited.append((doc, pages))
+        return cited
+
+    @staticmethod
+    def _unfetched_citations(
+        cited: list[tuple[str, list[int]]],
+        fetched: dict[str, set[int]],
+    ) -> list[str]:
+        """Return list of citation strings that reference pages not actually fetched."""
+        bad: list[str] = []
+        for doc, pages in cited:
+            fetched_for_doc = fetched.get(doc, set())
+            missing = [p for p in pages if p not in fetched_for_doc]
+            if missing:
+                pages_str = ",".join(str(p) for p in missing)
+                bad.append(f"{doc} p.{pages_str}")
+        return bad
+
     async def ask(self, question: str) -> str:
         """Answer a question by searching the wiki.
+
+        When cite=True, verifies that every \\source{} marker in the answer
+        corresponds to a page actually fetched via get_page_content. If hallucinated
+        citations are found, prompts the agent to re-read those pages and revise.
 
         Args:
             question: Natural language question about the indexed documents.
@@ -247,13 +337,35 @@ class WikiQueryAgent:
             Message(role="user", content=question),
             Message(
                 role="tool",
-                content=self.read_file("index.md"),
+                content=self._read_file("index.md"),
                 tool_args={"path": "index.md"},
                 tool_name="read_file",
             ),
         ]
         result = await self._agent.arun(input=messages)
-        return result.content or ""
+        answer = result.content or ""
+
+        if not self._cite:
+            return answer
+
+        fetched = self._fetched_pages(result.tools)
+        cited = self._cited_pages(answer)
+        bad = self._unfetched_citations(cited, fetched)
+
+        if bad:
+            bad_list = ", ".join(bad)
+            retry_prompt = (
+                f"Your previous answer cited pages you never fetched: {bad_list}.\n"
+                f"Steps:\n"
+                f"1. Call get_page_content for each of those pages now.\n"
+                f"2. Answer the original question using ONLY pages you have actually fetched.\n"
+                f"3. Output ONLY the final answer — no preamble, no narration.\n\n"
+                f"Original question: {question}"
+            )
+            retry_result = await self._agent.arun(retry_prompt)
+            answer = retry_result.content or answer
+
+        return answer
 
     def ask_sync(self, question: str) -> str:
         """Synchronous wrapper around ask().
